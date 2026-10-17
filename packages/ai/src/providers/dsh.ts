@@ -119,6 +119,52 @@ function send(obj: unknown): void {
 	proc?.stdin?.write(`${JSON.stringify(obj)}\n`);
 }
 
+/** Headless `-p`/`--print` runs exactly one turn: the persistent agent child
+ * must be torn down afterwards or its stdio pipes hold the event loop open
+ * forever. Interactive TUI keeps the child alive across turns. */
+function isHeadless(): boolean {
+	const argv = process.argv ?? [];
+	return argv.includes("-p") || argv.includes("--print");
+}
+
+function teardownAgent(): void {
+	sessions.clear();
+	for (const call of pending.values()) {
+		try {
+			call.reject(new Error("agent torn down"));
+		} catch {
+			// ignore
+		}
+	}
+	pending.clear();
+	turnHandler = null;
+	readBuffer = "";
+	const child = proc;
+	proc = null;
+	starting = null;
+	if (!child) return;
+	try {
+		child.stdout?.removeAllListeners("data");
+	} catch {
+		// ignore
+	}
+	try {
+		child.stdout?.destroy();
+	} catch {
+		// ignore
+	}
+	try {
+		child.stdin?.destroy();
+	} catch {
+		// ignore
+	}
+	try {
+		child.kill();
+	} catch {
+		// already gone
+	}
+}
+
 function onAgentLine(line: string): void {
 	if (!line.trim()) return;
 	let msg: any;
@@ -447,9 +493,8 @@ function streamDshTurn(
 			stream.push(errorEvent(model, output, error instanceof Error ? error.message : String(error)));
 			stream.end();
 		} finally {
-			// A flowing stdout 'data' listener holds the event loop open.
-			// Pause between turns so headless `-p` exits; resume on next turn.
-			proc?.stdout?.pause();
+			if (isHeadless()) teardownAgent();
+			else proc?.stdout?.pause();
 		}
 	})();
 
