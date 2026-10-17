@@ -5,7 +5,7 @@
 	"type": "module",
 	"piConfig": {
 		"name": "dsh",
-		"configDir": ".pi"
+		"configDir": ".dsh"
 	},
 	"bin": {
 		"dsh": "dist/bundle/cli.js"
