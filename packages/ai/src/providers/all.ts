@@ -4,6 +4,7 @@ import type { AnyModel, Api, ClassifierApi, ClassifierModel, ImageApi, ImageMode
 import modelDataManifest from "./data/.manifest.json" with { type: "json" };
 
 import { dshProvider } from "./dsh.ts";
+
 // Kept as a factory for OAuth-configured providers; NOT a built-in.
 export { radiusProvider } from "./radius.ts";
 

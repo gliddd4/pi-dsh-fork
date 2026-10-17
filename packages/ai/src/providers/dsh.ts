@@ -13,7 +13,7 @@
  * nothing to act on. It renders. DSH works.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +33,7 @@ import { createAssistantMessageEventStream } from "../utils/event-stream.ts";
 export const DSH_API = "dsh-acp";
 export const DSH_PROVIDER_ID = "dsh";
 export const DSH_MODEL_ID = "dsh-harness";
+export const DSH_BASE_URL = "dsh://harness";
 
 // ---------------------------------------------------------------------------
 // credentials (creds.env + ATLAS mapping, same as the standalone clients)
@@ -49,7 +50,10 @@ function ensureCreds(): void {
 			const k = t.slice(0, eq).trim();
 			if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;
 			if (process.env[k] !== undefined) continue;
-			process.env[k] = t.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+			process.env[k] = t
+				.slice(eq + 1)
+				.trim()
+				.replace(/^["']|["']$/g, "");
 		}
 	} catch {
 		// no creds file; fall through to whatever env exists
@@ -293,12 +297,17 @@ function streamDshTurn(
 	(async () => {
 		let textBlock: TextContent | null = null;
 		let thinkBlock: ThinkingContent | null = null;
+		let textIdx = -1;
+		let thinkIdx = -1;
+		let textFinal = "";
+		let thinkFinal = "";
 		const indexOf = (b: TextContent | ThinkingContent) => output.content.indexOf(b);
 		const ensureText = (): TextContent => {
 			if (!textBlock) {
 				textBlock = { type: "text", text: "" };
 				output.content.push(textBlock);
-				stream.push({ type: "text_start", contentIndex: indexOf(textBlock), partial: output });
+				textIdx = indexOf(textBlock);
+				stream.push({ type: "text_start", contentIndex: textIdx, partial: output });
 			}
 			return textBlock;
 		};
@@ -306,13 +315,15 @@ function streamDshTurn(
 			if (!thinkBlock) {
 				thinkBlock = { type: "thinking", thinking: "" };
 				output.content.push(thinkBlock);
-				stream.push({ type: "thinking_start", contentIndex: indexOf(thinkBlock), partial: output });
+			thinkIdx = indexOf(thinkBlock);
+				stream.push({ type: "thinking_start", contentIndex: thinkIdx, partial: output });
 			}
 			return thinkBlock;
 		};
 		const pushText = (delta: string): void => {
 			const b = ensureText();
 			b.text += delta;
+			textFinal += delta;
 			stream.push({ type: "text_delta", contentIndex: indexOf(b), delta, partial: output });
 		};
 
@@ -342,6 +353,7 @@ function streamDshTurn(
 						if (typeof t === "string" && t) {
 							const b = ensureThink();
 							b.thinking += t;
+							thinkFinal += t;
 							stream.push({ type: "thinking_delta", contentIndex: indexOf(b), delta: t, partial: output });
 						}
 					} else if (kind === "tool_call") {
@@ -359,7 +371,12 @@ function streamDshTurn(
 										.join("\n")
 								: "";
 							const tail = texts.split("\n").slice(-6).join("\n");
-							pushText(`${mark}\n${tail.split("\n").map((l) => `│ ${l}`).join("\n")}\n`);
+							pushText(
+								`${mark}\n${tail
+								.split("\n")
+								.map((l: string) => `│ ${l}`)
+									.join("\n")}\n`,
+							);
 						}
 					}
 				};
@@ -386,14 +403,19 @@ function streamDshTurn(
 			});
 
 			const stop = (turnResult?.stopReason as string | undefined) ?? "end_turn";
-			if (textBlock) {
-				stream.push({ type: "text_end", contentIndex: indexOf(textBlock), content: textBlock.text, partial: output });
+			if (textIdx >= 0) {
+				stream.push({
+					type: "text_end",
+					contentIndex: textIdx,
+					content: textFinal,
+					partial: output,
+				});
 			}
-			if (thinkBlock) {
+			if (thinkIdx >= 0) {
 				stream.push({
 					type: "thinking_end",
-					contentIndex: indexOf(thinkBlock),
-					content: thinkBlock.thinking,
+					contentIndex: thinkIdx,
+					content: thinkFinal,
 					partial: output,
 				});
 			}
@@ -421,6 +443,8 @@ export function dshProvider(): Provider<typeof DSH_API> {
 				id: DSH_MODEL_ID,
 				name: "DSH Harness",
 				api: DSH_API,
+				provider: DSH_PROVIDER_ID,
+				baseUrl: DSH_BASE_URL,
 				reasoning: true,
 				input: ["text"],
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
