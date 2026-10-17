@@ -236,6 +236,9 @@ export class ModelRuntime implements Models {
 					builtinModelDataGeneratedAt,
 				);
 			}
+			// DSH fork: the harness owns model truth (ambient creds + DSH_MODEL).
+			// Never overlay Pi's remote catalog onto it.
+			if (provider.id === "dsh") return provider;
 			return withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt);
 		});
 		const runtime = new ModelRuntime(
