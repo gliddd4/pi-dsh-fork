@@ -1,13 +1,14 @@
 {
-	"name": "@earendil-works/pi-coding-agent",
+	"name": "@gliddd4/dsh-coding-agent",
 	"version": "1.3.0",
-	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
+	"description": "DSH terminal UI: Pi interface, DeepSeek Harness guts",
 	"type": "module",
 	"piConfig": {
+		"name": "dsh",
 		"configDir": ".pi"
 	},
 	"bin": {
-		"pi": "dist/bundle/cli.js"
+		"dsh": "dist/bundle/cli.js"
 	},
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
