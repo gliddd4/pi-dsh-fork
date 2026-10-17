@@ -104,6 +104,14 @@ function resolveAgent(): { command: string; args: string[] } {
 	if (existsSync(bundledBin) && existsSync(`${bundledCreator}/package.json`)) {
 		return { command: bundledBin, args: ["--bundle", bundledCreator] };
 	}
+	const dshHome = process.env.DSH_HOME ?? `${home}/.dsh`;
+	for (const profile of ["tui-test", "martty", "tui"]) {
+		const bin = `${dshHome}/profiles/${profile}/node_modules/.bin/dsh-acp`;
+		const creatorPkg = `${dshHome}/profiles/${profile}/node_modules/@openma/deepseek-harness-tui/creator/package.json`;
+		if (existsSync(bin) && existsSync(creatorPkg)) {
+			return { command: bin, args: ["--bundle", creatorPkg.slice(0, -"/package.json".length)] };
+		}
+	}
 	return { command: "dsh-acp", args: [] };
 }
 
@@ -151,6 +159,16 @@ async function acpStart(): Promise<void> {
 		const { command, args } = resolveAgent();
 		const child = spawn(command, args, { stdio: ["pipe", "pipe", "ignore"] });
 		proc = child;
+		// Never hold the event loop hostage (headless `-p` must exit when
+		// the turn ends) and never orphan the agent when we go away.
+		child.unref();
+		process.on("exit", () => {
+			try {
+				child.kill();
+			} catch {
+				// already gone
+			}
+		});
 		child.stdout?.setEncoding("utf8");
 		child.stdout?.on("data", (chunk: string) => {
 			readBuffer += chunk;
