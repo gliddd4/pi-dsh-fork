@@ -10,6 +10,11 @@ import * as path from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import {
+	dshAuthenticateMethod,
+	dshCredsConfigured,
+	getDshAuthMethods,
+} from "@earendil-works/pi-ai/providers/dsh";
+import {
 	type AssistantMessage,
 	type ImageContent,
 	isRetryableAssistantError,
@@ -141,7 +146,7 @@ import { CustomEntryComponent } from "./components/custom-entry.ts";
 import { CustomMessageComponent } from "./components/custom-message.ts";
 import { DynamicBorder } from "./components/dynamic-border.ts";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
-import { playArmin3d, playPiLogo3d } from "./components/easter-egg-3d.lazy.ts";
+import { playArmin3d } from "./components/easter-egg-3d.lazy.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
@@ -1055,7 +1060,7 @@ export class InteractiveMode {
 					`Press ${keyText("app.tools.expand")} to show full startup help${showDetails ? " and loaded resources" : ""}.`,
 				);
 			const onboarding = () =>
-				theme.fg("dim", `Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`);
+				theme.fg("dim", `dsh runs the DeepSeek harness. Ask it about its skills, profiles, and credentials.`);
 			const header = new BuiltInHeader(
 				() => `${withLogo(compactInstructions())}\n${compactOnboarding()}\n\n${onboarding()}`,
 				() => `${withLogo(expandedInstructions())}\n\n${onboarding()}`,
@@ -1063,7 +1068,6 @@ export class InteractiveMode {
 				1,
 				0,
 			);
-			if (showLogo) header.onLogoClick = (column, row) => playPiLogo3d(this.renderer, column, row);
 			this.builtInHeader = header;
 
 			// Setup UI layout
@@ -5811,9 +5815,87 @@ export class InteractiveMode {
 	}
 
 	private async handleLoginCommand(_providerRef?: string): Promise<void> {
-		// DSH fork: no Pi-side login exists. The harness resolves credentials
-		// itself (creds.env + ATLAS mapping); there is nothing to sign into here.
-		this.showStatus("No login needed — dsh uses the harness credential chain (creds.env).");
+		// DSH fork: sign in through the harness's own auth methods — the same
+		// credential store the dsh Web UI uses. Nothing Pi-side is involved.
+		let methods: Array<{ id: string; name: string; description?: string }>;
+		try {
+			methods = await getDshAuthMethods();
+		} catch (error) {
+			this.showError(
+				`Could not reach the harness agent: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		if (methods.length === 0) {
+			this.showStatus("The harness advertised no login methods.");
+			return;
+		}
+		const configured = dshCredsConfigured();
+		const options: AuthSelectorProvider[] = methods.map((method) => ({
+			id: method.id,
+			name: method.name,
+			authType: (method.id === "browser" ? "oauth" : "api_key") as AuthSelectorProvider["authType"],
+			subscription: false,
+			status:
+				configured && method.id !== "browser"
+					? { type: "api_key" as const, source: "harness credential store" }
+					: undefined,
+		}));
+		this.showSelector((done) => {
+			const selector = new OAuthSelectorComponent(
+				"login",
+				options,
+				async (methodId) => {
+					done();
+					const method = methods.find((candidate) => candidate.id === methodId);
+					if (!method) return;
+					if (method.id === "browser") {
+						this.showStatus("Opening harness sign-in page…");
+						try {
+							await dshAuthenticateMethod(method.id);
+							this.showStatus("Signed in (harness credential store).");
+						} catch (error) {
+							this.showError(
+								`Sign-in failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						}
+						return;
+					}
+					const dialog = new LoginDialogComponent(this.ui, method.id, () => {}, method.name);
+					this.editorContainer.clear();
+					this.editorContainer.addChild(dialog);
+					this.ui.setFocus(dialog);
+					this.ui.requestRender();
+					const restoreEditor = () => {
+						this.editorContainer.clear();
+						this.editorContainer.addChild(this.editor);
+						this.ui.setFocus(this.editor);
+						this.ui.requestRender();
+					};
+					try {
+						const apiKey = await dialog.showManualInput(`Paste ${method.name}:`);
+						restoreEditor();
+						if (!apiKey.trim()) {
+							this.showStatus("Cancelled.");
+							return;
+						}
+						await dshAuthenticateMethod(method.id, apiKey.trim());
+						this.showStatus(`Signed in as ${method.name} (harness credential store).`);
+					} catch (error) {
+						restoreEditor();
+						const message = error instanceof Error ? error.message : String(error);
+						if (message !== "Login cancelled") {
+							this.showError(`Sign-in failed: ${message}`);
+						}
+					}
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+			);
+			return { component: selector, focus: selector };
+		});
 	}
 
 	/** `onBack` reopens the selector the login was started from when the user cancels it. */

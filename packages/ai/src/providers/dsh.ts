@@ -92,6 +92,15 @@ let readBuffer = "";
 let turnHandler: ((update: any) => void) | null = null;
 const sessions = new Map<string, SessionRecord>();
 
+/** Login methods advertised by the harness agent's `initialize` result. */
+export interface DshAuthMethod {
+	id: string;
+	name: string;
+	description?: string;
+}
+
+let dshAuthMethods: DshAuthMethod[] = [];
+
 function resolveAgent(): { command: string; args: string[] } {
 	const env = (process.env.DSH_TUI_AGENT ?? "").trim();
 	if (env) {
@@ -231,10 +240,23 @@ async function acpStart(): Promise<void> {
 			for (const call of pending.values()) call.reject(new Error("agent exited"));
 			pending.clear();
 		});
-		await acpRpc("initialize", {
+		const init = await acpRpc("initialize", {
 			protocolVersion: 1,
 			clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
 		});
+		const advertised = (init as { authMethods?: unknown } | null | undefined)?.authMethods;
+		if (Array.isArray(advertised)) {
+			dshAuthMethods = advertised
+				.filter(
+					(m): m is { id: unknown; name: unknown; description?: unknown } =>
+						typeof m === "object" && m !== null && typeof (m as { id: unknown }).id === "string",
+				)
+				.map((m) => ({
+					id: m.id as string,
+					name: typeof m.name === "string" && m.name ? m.name : (m.id as string),
+					...(typeof m.description === "string" && m.description ? { description: m.description } : {}),
+				}));
+		}
 		const key = process.env.DEEPSEEK_API_KEY;
 		if (key?.trim()) {
 			try {
@@ -250,6 +272,26 @@ async function acpStart(): Promise<void> {
 		}
 	})();
 	return starting;
+}
+
+/** Login methods the harness agent advertises (same store the dsh Web UI uses). */
+export async function getDshAuthMethods(): Promise<DshAuthMethod[]> {
+	await acpStart();
+	return [...dshAuthMethods];
+}
+
+/** Whether a harness credential is already resolvable (env or creds file). */
+export function dshCredsConfigured(): boolean {
+	ensureCreds();
+	return Boolean(process.env.DEEPSEEK_API_KEY?.trim() || process.env.ATLAS_API_KEY?.trim());
+}
+
+/** Authenticate with the harness credential store (saves keys, like the Web UI). */
+export async function dshAuthenticateMethod(methodId: string, apiKey?: string): Promise<void> {
+	await acpStart();
+	const params: Record<string, unknown> = { methodId };
+	if (apiKey !== undefined) params._meta = { "api-key": { apiKey } };
+	await acpRpc("authenticate", params);
 }
 
 /** Idempotent: lets headless runs exit instead of lingering on agent pipes. */
@@ -277,7 +319,11 @@ async function acpSession(piSessionId: string): Promise<SessionRecord> {
 	await acpStart();
 	const existing = sessions.get(piSessionId);
 	if (existing) return existing;
-	const res = await acpRpc("session/new", { cwd: process.cwd(), mcpServers: [] });
+	const newParams: Record<string, unknown> = { cwd: process.cwd(), mcpServers: [] };
+	// Harness model route (Settings → Models equivalent). Unset = agent default.
+	const routeModel = process.env.DSH_MODEL?.trim();
+	if (routeModel) newParams.model = routeModel;
+	const res = await acpRpc("session/new", newParams);
 	if (!res?.sessionId) throw new Error(`session/new returned no sessionId: ${JSON.stringify(res)}`);
 	const rec: SessionRecord = { acpSessionId: res.sessionId, seenLen: 0 };
 	sessions.set(piSessionId, rec);
