@@ -353,6 +353,7 @@ function streamDshTurn(
 
 			stream.push({ type: "start", partial: output });
 
+			proc?.stdout?.resume();
 			const turnResult = await new Promise<any>((resolve, reject) => {
 				const signal = (options as { signal?: AbortSignal } | undefined)?.signal;
 				const onAbort = (): void => {
@@ -445,6 +446,10 @@ function streamDshTurn(
 			turnHandler = null;
 			stream.push(errorEvent(model, output, error instanceof Error ? error.message : String(error)));
 			stream.end();
+		} finally {
+			// A flowing stdout 'data' listener holds the event loop open.
+			// Pause between turns so headless `-p` exits; resume on next turn.
+			proc?.stdout?.pause();
 		}
 	})();
 
